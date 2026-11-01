@@ -1,0 +1,194 @@
+[
+  {
+    "no": "01",
+    "title": "Dashboard",
+    "path": "/",
+    "file": "docs/screenshots/01-root.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "02",
+    "title": "Kasir (POS)",
+    "path": "/pos",
+    "file": "docs/screenshots/02-pos.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "03",
+    "title": "Transaksi",
+    "path": "/transactions",
+    "file": "docs/screenshots/03-transactions.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "04",
+    "title": "Produk",
+    "path": "/products",
+    "file": "docs/screenshots/04-products.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "05",
+    "title": "Customer",
+    "path": "/customers",
+    "file": "docs/screenshots/05-customers.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "06",
+    "title": "Stok Barang",
+    "path": "/stock",
+    "file": "docs/screenshots/06-stock.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "07",
+    "title": "Stock Opname",
+    "path": "/stock-opname",
+    "file": "docs/screenshots/07-stockopname.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "08",
+    "title": "Repack",
+    "path": "/slices",
+    "file": "docs/screenshots/08-slices.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "09",
+    "title": "Transfer Barang",
+    "path": "/stock-transfer",
+    "file": "docs/screenshots/09-stocktransfer.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "10",
+    "title": "Delivery Order",
+    "path": "/delivery-orders",
+    "file": "docs/screenshots/10-deliveryorders.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "11",
+    "title": "Delivery Notes",
+    "path": "/delivery-notes",
+    "file": "docs/screenshots/11-deliverynotes.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "12",
+    "title": "Permintaan FG",
+    "path": "/stock-requests",
+    "file": "docs/screenshots/12-stockrequests.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "13",
+    "title": "Pulling Order",
+    "path": "/pulling-order",
+    "file": "docs/screenshots/13-pullingorder.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "14",
+    "title": "Rekap Order",
+    "path": "/rekap-order",
+    "file": "docs/screenshots/14-rekaporder.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "15",
+    "title": "Kitchen Monitor",
+    "path": "/kitchen",
+    "file": "docs/screenshots/15-kitchen.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "16",
+    "title": "Sync HPY",
+    "path": "/sync",
+    "file": "docs/screenshots/16-sync.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "17",
+    "title": "Laporan Online",
+    "path": "/online-report",
+    "file": "docs/screenshots/17-onlinereport.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "18",
+    "title": "Laporan Pembayaran",
+    "path": "/mop-report",
+    "file": "docs/screenshots/18-mopreport.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "19",
+    "title": "Kupon",
+    "path": "/coupons",
+    "file": "docs/screenshots/19-coupons.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "20",
+    "title": "Manajemen User",
+    "path": "/users",
+    "file": "docs/screenshots/20-users.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "21",
+    "title": "Manajemen Role",
+    "path": "/roles",
+    "file": "docs/screenshots/21-roles.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "22",
+    "title": "Hak Akses",
+    "path": "/permissions",
+    "file": "docs/screenshots/22-permissions.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "23",
+    "title": "Warehouse",
+    "path": "/warehouses",
+    "file": "docs/screenshots/23-warehouses.png",
+    "status": 200,
+    "ok": true
+  },
+  {
+    "no": "24",
+    "title": "Pengaturan Toko",
+    "path": "/settings",
+    "file": "docs/screenshots/24-settings.png",
+    "status": 200,
+    "ok": true
+  }
+]
