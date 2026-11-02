@@ -35,6 +35,9 @@ class ErpNextService
 
     private string $apiSecret;
 
+    /** Cache hasil deteksi versi ERP; null = belum dicoba, [] = sudah dicoba tapi gagal. */
+    private ?array $erpVersion = null;
+
     public function __construct()
     {
         $this->baseUrl = rtrim(Setting::get('erpnext_url', env('ERPNEXT_URL', '')), '/');
@@ -52,6 +55,43 @@ class ErpNextService
             ],
             'verify' => false,
         ]);
+    }
+
+    // =========================================================
+    // DETEKSI VERSI ERP
+    // ngabaso = v15, sinona = v13. Beda major version bisa beda field/perilaku.
+    // Helper ini TIDAK mengubah alur sync apa pun — hanya menyediakan info versi
+    // untuk diagnosa (mis. ditempelkan ke pesan error) & percabangan di masa depan.
+    // =========================================================
+
+    /** Deteksi versi ERP (frappe/erpnext). Dipanggil sekali, hasilnya di-cache. */
+    public function detectErpVersion(): ?array
+    {
+        if ($this->erpVersion !== null) {
+            return $this->erpVersion ?: null;
+        }
+        if (empty($this->baseUrl)) {
+            return null;
+        }
+        try {
+            $resp = $this->client->get('/api/method/frappe.utils.change_log.get_versions');
+            $msg = json_decode($resp->getBody()->getContents(), true)['message'] ?? [];
+            $erp = $msg['erpnext']['version'] ?? ($msg['frappe']['version'] ?? null);
+            $major = $erp ? (int) explode('.', $erp)[0] : null;
+
+            return $this->erpVersion = ['erpnext' => $erp, 'major' => $major];
+        } catch (\Throwable $e) {
+            // Tandai sudah dicoba supaya tidak memanggil berulang tiap kali dipakai.
+            $this->erpVersion = [];
+
+            return null;
+        }
+    }
+
+    /** Major version ERP (mis. 13 atau 15), atau null bila tak terdeteksi. */
+    public function erpMajorVersion(): ?int
+    {
+        return $this->detectErpVersion()['major'] ?? null;
     }
 
     // =========================================================
@@ -226,6 +266,10 @@ class ErpNextService
             return ['success' => false, 'error' => 'Network unreachable', 'network_error' => true];
         } catch (RequestException $e) {
             $errorBody = $this->extractError($e);
+            // Tandai versi ERP di pesan FAILED agar error khas beda-versi langsung terlihat.
+            if ($v = $this->erpMajorVersion()) {
+                $errorBody = "[ERP v{$v}] {$errorBody}";
+            }
 
             $transaction->update([
                 'erp_sync_status' => 'failed',
