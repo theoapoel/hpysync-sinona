@@ -143,12 +143,20 @@ class KitchenApiController extends Controller
 
         $stockRequest->update($data);
 
-        // Saat selesai: submit Material Request di ERP HPY (sama seperti alur web)
-        if ($newStatus === 'done' && $stockRequest->erp_material_request) {
+        // Saat selesai: submit Material Request di ERP HPY (sama seperti alur web).
+        // Bila MR belum sempat terbuat, buat dulu supaya "Selesai" tetap membentuk stok.
+        if ($newStatus === 'done') {
             try {
                 $erp = new ErpNextService;
                 if ($erp->isConfigured()) {
-                    $erp->submitMaterialRequest($stockRequest);
+                    if (! $stockRequest->erp_material_request) {
+                        $stockRequest->load('items.product');
+                        $erp->createMaterialRequest($stockRequest);
+                        $stockRequest->refresh();
+                    }
+                    if ($stockRequest->erp_material_request) {
+                        $erp->submitMaterialRequest($stockRequest);
+                    }
                 }
             } catch (\Exception $e) {
                 // silent — jangan block perubahan status kitchen

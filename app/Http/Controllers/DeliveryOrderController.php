@@ -7,10 +7,12 @@ use App\Models\DeliveryOrder;
 use App\Models\DeliveryOrderItem;
 use App\Models\DeliveryShipment;
 use App\Models\Product;
+use App\Models\StockRequest;
 use App\Services\ErpNextService;
 use App\Services\ThermalPrintService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class DeliveryOrderController extends Controller
 {
@@ -214,7 +216,7 @@ class DeliveryOrderController extends Controller
 
     public function show(DeliveryOrder $deliveryOrder)
     {
-        $deliveryOrder->load('customer', 'creator', 'items.product', 'shipments', 'payments.creator');
+        $deliveryOrder->load('customer', 'creator', 'items.product', 'shipments', 'payments.creator', 'productionRequest');
 
         // Daftar Mode of Payment dari ERP (cached 30 menit, clear dengan php artisan cache:clear)
         $mopList = [];
@@ -280,14 +282,6 @@ class DeliveryOrderController extends Controller
                     if (!empty($paymentSyncFails)) {
                         $syncMsg .= ' (Sync payment gagal: ' . implode('; ', $paymentSyncFails) . ')';
                     }
-
-                    // 4. Picu produksi FG lewat Material Request (Manufacture).
-                    //    Tanpa ini DO tak pernah memicu produksi -> stok FG 0 ->
-                    //    Delivery Note mentok Draft.
-                    $mrResult = $erp->createMaterialRequestForDeliveryOrder($deliveryOrder);
-                    $syncMsg .= $mrResult['success']
-                        ? ' MR produksi: ' . ($mrResult['docname'] ?? 'synced') . '.'
-                        : ' (Buat MR produksi gagal: ' . ($mrResult['error'] ?? '') . ')';
                 } else {
                     $syncMsg = ' (Sync SO ERP gagal: ' . ($soResult['error'] ?? '') . ')';
                 }
@@ -296,7 +290,78 @@ class DeliveryOrderController extends Controller
             // Silent — sync failure must not block confirmation
         }
 
+        // 4. Produksi: titipkan Permintaan FG untuk barang di order ini.
+        //    Sengaja di luar blok Sales Order — permintaan ini dokumen lokal,
+        //    jadi tetap terbentuk walau SO gagal sync atau ERP tak terjangkau.
+        $syncMsg .= $this->createProductionRequest($deliveryOrder);
+
         return back()->with('success', 'Order dikonfirmasi dan masuk antrian dapur.' . $syncMsg);
+    }
+
+    /**
+     * Buat Permintaan FG otomatis untuk DO yang baru dikonfirmasi.
+     *
+     * Dulu konfirmasi DO langsung membuat + mengesahkan Material Request di
+     * ERP HPY, sehingga barang yang juga diminta staf lewat Permintaan FG
+     * terproduksi dua kali di buku. Sekarang DO hanya membuat Permintaan FG;
+     * Material Request-nya Draft dan baru disahkan saat dapur menekan "Selesai".
+     *
+     * Mengembalikan potongan pesan untuk flash message. Tidak pernah melempar
+     * exception: kegagalan di sini tidak boleh menggagalkan konfirmasi order.
+     */
+    private function createProductionRequest(DeliveryOrder $order): string
+    {
+        try {
+            $order->loadMissing('items.product', 'customer');
+
+            // Jangan susulkan Permintaan FG untuk order yang barangnya SUDAH
+            // dikirim — produksinya tak relevan lagi dan akan dobel bila dibuat
+            // sekarang. Melindungi dari tombol "Sync SO" yang ditekan ulang/iseng
+            // pada DO lama yang sudah selesai: idempotensi createFromDeliveryOrder
+            // hanya mencegah Permintaan FG KEDUA, bukan pembuatan PERTAMA pada DO
+            // yang telanjur terkirim tanpa Permintaan FG (mis. kasus ELDA 13 Nov).
+            $sudahKirim = $order->status === 'completed'
+                || $order->shipments()->whereNotNull('erp_delivery_note')->exists();
+            $adaFG = StockRequest::where('delivery_order_id', $order->id)
+                ->where('status', '!=', 'cancelled')->exists();
+            if ($sudahKirim && ! $adaFG) {
+                return ' Order sudah dikirim — Permintaan FG tidak dibuat (hindari produksi dobel).';
+            }
+
+            $erp = new ErpNextService();
+            $configured = $erp->isConfigured();
+
+            // Hanya barang yang punya BOM aktif (memang diproduksi) yang diminta.
+            // null = ERP tak bisa ditanya → semua item ikut, ERP yang menyaring.
+            $producible = null;
+            if ($configured) {
+                $codes = $order->items
+                    ->map(fn ($item) => $item->product?->erp_item_code ?? $item->product_sku)
+                    ->filter()->values()->all();
+                $producible = $erp->itemsWithActiveBom($codes);
+            }
+
+            $request = StockRequest::createFromDeliveryOrder($order, $producible);
+            if (! $request) {
+                return ' Tidak ada barang produksi di order ini, Permintaan FG tidak dibuat.';
+            }
+
+            $msg = ' Permintaan FG: ' . $request->request_no . '.';
+
+            if ($configured && ! $request->erp_material_request) {
+                $request->load('items.product');
+                $result = $erp->createMaterialRequest($request);
+                if (! ($result['success'] ?? false)) {
+                    $msg .= ' (Sync MR gagal: ' . ($result['error'] ?? '') . ')';
+                }
+            }
+
+            return $msg;
+        } catch (\Throwable $e) {
+            Log::error('DO → Permintaan FG gagal', ['order' => $order->order_no, 'error' => $e->getMessage()]);
+
+            return ' (Buat Permintaan FG gagal: ' . $e->getMessage() . ')';
+        }
     }
 
     public function schedule(Request $request, DeliveryOrder $deliveryOrder)
@@ -419,18 +484,76 @@ class DeliveryOrderController extends Controller
         $deliveryOrder->update(['status' => 'cancelled']);
 
         return back()->with('success', 'Order dibatalkan.'
-            . ($deliveryOrder->erp_sales_invoice ? ' Invoice & pembayaran di ERP HPY ikut dibatalkan.' : ''));
+            . ($deliveryOrder->erp_sales_invoice ? ' Invoice & pembayaran di ERP HPY ikut dibatalkan.' : '')
+            . $this->cancelProductionRequest($deliveryOrder));
+    }
+
+    /**
+     * Order batal → Permintaan FG otomatisnya ikut batal selama belum "Selesai".
+     * Yang sudah selesai dibiarkan: barangnya sudah dibuat dan stoknya memang ada.
+     */
+    private function cancelProductionRequest(DeliveryOrder $order): string
+    {
+        try {
+            $request = $order->productionRequest()->first();
+            if (! $request) {
+                return '';
+            }
+            if ($request->kitchen_status === 'done') {
+                return ' Permintaan FG ' . $request->request_no . ' sudah selesai diproduksi — stoknya tetap ada.';
+            }
+
+            $note = '';
+            if ($request->erp_material_request) {
+                $erp = new ErpNextService();
+                if ($erp->isConfigured()) {
+                    $result = $erp->deleteDraftMaterialRequest($request);
+                    if (! $result['success'] && ! empty($result['submitted'])) {
+                        return ' Permintaan FG ' . $request->request_no . ' TIDAK dibatalkan: ' . ($result['error'] ?? '');
+                    }
+                    if (! $result['success']) {
+                        $note = ' (Material Request ' . $request->erp_material_request . ' belum terhapus di ERP HPY.)';
+                    }
+                }
+            }
+
+            $request->update(['status' => 'cancelled', 'kitchen_status' => null]);
+
+            return ' Permintaan FG ' . $request->request_no . ' ikut dibatalkan.' . $note;
+        } catch (\Throwable $e) {
+            Log::error('Batal DO: Permintaan FG gagal dibatalkan', ['order' => $order->order_no, 'error' => $e->getMessage()]);
+
+            return ' (Permintaan FG gagal dibatalkan: ' . $e->getMessage() . ')';
+        }
     }
 
     public function syncSalesOrder(DeliveryOrder $deliveryOrder)
     {
+        $deliveryOrder->load('items.product', 'customer');
+
+        // Susulkan Permintaan FG. Dulu jalur re-sync SO manual ini melewati
+        // pembuatan Permintaan FG (hanya confirm() yang membuatnya), sehingga DO
+        // yang SO-nya dibuat lewat tombol ini tidak pernah memicu produksi →
+        // bahan baku (mis. bolu polos pandan) tidak terpotong.
+        // Aman dari dobel: createFromDeliveryOrder idempoten — mengembalikan
+        // Permintaan FG yang sudah ada bila DO ini sudah punya (dari confirm()
+        // atau penekanan tombol sebelumnya), jadi tidak pernah membuat yang kedua.
+        $fgMsg = $this->createProductionRequest($deliveryOrder);
+
         if ($deliveryOrder->erp_sync_status === 'synced') {
-            return response()->json(['success' => false, 'error' => 'Sales Order sudah pernah disync.']);
+            return response()->json([
+                'success'    => false,
+                'error'      => 'Sales Order sudah pernah disync.',
+                'production' => trim($fgMsg),
+            ]);
         }
 
-        $deliveryOrder->load('items.product', 'customer');
         $erp    = new ErpNextService();
         $result = $erp->createSalesOrder($deliveryOrder);
+
+        if (is_array($result)) {
+            $result['production'] = trim($fgMsg);
+        }
 
         return response()->json($result);
     }

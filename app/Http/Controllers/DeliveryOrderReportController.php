@@ -33,8 +33,12 @@ class DeliveryOrderReportController extends Controller
                 : Carbon::today()->endOfMonth();
         }
 
-        $status = $request->input('status', '');       // '', draft, confirmed, delivering, completed
-        $payment = $request->input('payment', '');      // '', unpaid, partial, paid
+        // Cast ke string: middleware ConvertEmptyStringsToNull mengubah "status="
+        // kosong dari form menjadi null, sehingga input(...,'') TIDAK mengembalikan ''
+        // (key-nya ada, nilainya null) dan filter when() ikut jalan dengan nilai null —
+        // menghasilkan "where status = null" yang cocok 0 baris. (string) null = ''.
+        $status = (string) $request->input('status');       // '', draft, confirmed, delivering, completed
+        $payment = (string) $request->input('payment');      // '', unpaid, partial, paid
 
         $orders = DeliveryOrder::with(['customer', 'payments', 'shipments'])
             ->whereBetween('delivery_date', [$from->toDateString(), $to->toDateString()])

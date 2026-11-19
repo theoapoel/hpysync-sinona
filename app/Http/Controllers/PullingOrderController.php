@@ -64,7 +64,7 @@ class PullingOrderController extends Controller
         }
 
         if (! $type || $type === 'fg_request') {
-            $srQuery = StockRequest::with('requester')
+            $srQuery = StockRequest::with('requester', 'deliveryOrder')
                 ->where('status', '!=', 'cancelled');
 
             if ($search) {
@@ -83,7 +83,9 @@ class PullingOrderController extends Controller
                     'type_label' => 'Permintaan FG',
                     'id' => $sr->id,
                     'doc_no' => $sr->request_no,
-                    'party' => $sr->requester?->name ?? '-',
+                    'party' => $sr->delivery_order_id
+                        ? 'Auto dari ' . ($sr->deliveryOrder?->order_no ?? 'Delivery Order')
+                        : ($sr->requester?->name ?? '-'),
                     'date' => $sr->needed_date,
                     'total' => null,
                     'paid' => null,

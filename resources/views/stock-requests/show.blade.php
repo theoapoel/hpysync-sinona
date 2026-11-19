@@ -28,6 +28,17 @@
             <i class="fas fa-sync-alt"></i> Sync ERP
         </button>
         @endif
+        {{-- Permintaan yang sudah diajukan masih bisa dibatalkan selama dapur belum
+             menekan "Selesai" (mis. permintaan otomatis dari DO yang barangnya
+             ternyata sudah ada). --}}
+        @if($req->status === 'submitted' && $req->kitchen_status !== 'done')
+        <form method="POST" action="{{ route('stock-requests.cancel', $req) }}" onsubmit="return confirm('Batalkan permintaan ini? Produksinya tidak akan dicatat.')">
+            @csrf
+            <button type="submit" class="btn btn-ghost" style="color:var(--red)">
+                <i class="fas fa-times"></i> Batalkan
+            </button>
+        </form>
+        @endif
         <a href="{{ route('stock-requests.index') }}" class="btn btn-ghost">
             <i class="fas fa-arrow-left"></i> Kembali
         </a>
@@ -73,6 +84,22 @@
                     </div>
                     @endif
                 </div>
+                @if($req->delivery_order_id)
+                <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+                    <div class="text-muted" style="font-size:12px;margin-bottom:2px">Asal</div>
+                    <div>
+                        <i class="fas fa-truck text-blue"></i>
+                        Dibuat otomatis dari Delivery Order
+                        @if($req->deliveryOrder)
+                        <a href="{{ route('delivery-orders.show', $req->deliveryOrder) }}" class="font-medium text-blue">{{ $req->deliveryOrder->order_no }}</a>
+                        @if($req->deliveryOrder->customer) &middot; {{ $req->deliveryOrder->customer->name }} @endif
+                        @endif
+                    </div>
+                    <div class="text-muted" style="font-size:12px;margin-top:4px">
+                        Stok terbentuk setelah dapur menekan Selesai. Jangan buat permintaan baru untuk barang yang sama.
+                    </div>
+                </div>
+                @endif
                 @if($req->notes)
                 <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
                     <div class="text-muted" style="font-size:12px;margin-bottom:2px">Catatan</div>

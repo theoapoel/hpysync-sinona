@@ -74,7 +74,12 @@
             <tbody>
             @forelse($requests as $req)
             <tr>
-                <td><a href="{{ route('stock-requests.show', $req) }}" class="font-medium text-blue">{{ $req->request_no }}</a></td>
+                <td>
+                    <a href="{{ route('stock-requests.show', $req) }}" class="font-medium text-blue">{{ $req->request_no }}</a>
+                    @if($req->delivery_order_id)
+                    <div class="text-muted" style="font-size:11px"><i class="fas fa-truck"></i> Auto dari {{ $req->deliveryOrder->order_no ?? 'Delivery Order' }}</div>
+                    @endif
+                </td>
                 <td>
                     <div style="font-size:13px">{{ $req->requester->name ?? '—' }}</div>
                     <div class="text-muted" style="font-size:11px">{{ $req->created_at->isoFormat('D MMM Y HH:mm') }}</div>

@@ -35,9 +35,6 @@ class ErpNextService
 
     private string $apiSecret;
 
-    /** Cache hasil deteksi versi ERP; null = belum dicoba, [] = sudah dicoba tapi gagal. */
-    private ?array $erpVersion = null;
-
     public function __construct()
     {
         $this->baseUrl = rtrim(Setting::get('erpnext_url', env('ERPNEXT_URL', '')), '/');
@@ -55,43 +52,6 @@ class ErpNextService
             ],
             'verify' => false,
         ]);
-    }
-
-    // =========================================================
-    // DETEKSI VERSI ERP
-    // ngabaso = v15, sinona = v13. Beda major version bisa beda field/perilaku.
-    // Helper ini TIDAK mengubah alur sync apa pun — hanya menyediakan info versi
-    // untuk diagnosa (mis. ditempelkan ke pesan error) & percabangan di masa depan.
-    // =========================================================
-
-    /** Deteksi versi ERP (frappe/erpnext). Dipanggil sekali, hasilnya di-cache. */
-    public function detectErpVersion(): ?array
-    {
-        if ($this->erpVersion !== null) {
-            return $this->erpVersion ?: null;
-        }
-        if (empty($this->baseUrl)) {
-            return null;
-        }
-        try {
-            $resp = $this->client->get('/api/method/frappe.utils.change_log.get_versions');
-            $msg = json_decode($resp->getBody()->getContents(), true)['message'] ?? [];
-            $erp = $msg['erpnext']['version'] ?? ($msg['frappe']['version'] ?? null);
-            $major = $erp ? (int) explode('.', $erp)[0] : null;
-
-            return $this->erpVersion = ['erpnext' => $erp, 'major' => $major];
-        } catch (\Throwable $e) {
-            // Tandai sudah dicoba supaya tidak memanggil berulang tiap kali dipakai.
-            $this->erpVersion = [];
-
-            return null;
-        }
-    }
-
-    /** Major version ERP (mis. 13 atau 15), atau null bila tak terdeteksi. */
-    public function erpMajorVersion(): ?int
-    {
-        return $this->detectErpVersion()['major'] ?? null;
     }
 
     // =========================================================
@@ -266,10 +226,6 @@ class ErpNextService
             return ['success' => false, 'error' => 'Network unreachable', 'network_error' => true];
         } catch (RequestException $e) {
             $errorBody = $this->extractError($e);
-            // Tandai versi ERP di pesan FAILED agar error khas beda-versi langsung terlihat.
-            if ($v = $this->erpMajorVersion()) {
-                $errorBody = "[ERP v{$v}] {$errorBody}";
-            }
 
             $transaction->update([
                 'erp_sync_status' => 'failed',
@@ -2071,7 +2027,9 @@ class ErpNextService
             // mencoba submit nomor yang sudah tiada (idempotency guard yang
             // kalau tidak begini akan mentok Draft selamanya).
             if ($this->erpDocExists('Delivery Note', $shipment->erp_delivery_note)) {
-                return $this->submitOrKeepDraftDeliveryNote($shipment, $shipment->erp_delivery_note);
+                // Ini selalu percobaan ulang (DN baru hanya sampai sini kalau sudah
+                // pernah dibuat) — geser posting ke waktu retry ini sebelum submit.
+                return $this->submitOrKeepDraftDeliveryNote($shipment, $shipment->erp_delivery_note, refreshPostingTime: true);
             }
             Log::warning('DN tersimpan tidak ada lagi di ERP, reset untuk dibuat ulang', [
                 'shipment' => $shipment->id, 'dn' => $shipment->erp_delivery_note,
@@ -2210,7 +2168,7 @@ class ErpNextService
      * di HPY — nomornya dicatat supaya sync ulang menyelesaikan submit, bukan membuat
      * DN baru. Mengembalikan nomor + status ('Submitted'/'Draft') untuk diinfokan.
      */
-    private function submitOrKeepDraftDeliveryNote(DeliveryShipment $shipment, ?string $docname): array
+    private function submitOrKeepDraftDeliveryNote(DeliveryShipment $shipment, ?string $docname, bool $refreshPostingTime = false): array
     {
         if (empty($docname)) {
             $shipment->update(['erp_sync_status' => 'failed', 'erp_sync_error' => 'Delivery Note gagal dibuat.']);
@@ -2223,6 +2181,29 @@ class ErpNextService
             $shipment->update(['erp_delivery_note' => $docname, 'erp_sync_status' => 'synced', 'erp_sync_error' => null]);
 
             return ['success' => true, 'delivery_note' => $docname, 'docname' => $docname, 'submitted' => true, 'status' => 'Submitted'];
+        }
+
+        // Percobaan sebelumnya gagal di posting_time lama (biasanya mengikuti jam
+        // kirim yang diisi staff). HPYERP memvalidasi stok negatif secara kronologis
+        // per posting_time, bukan snapshot stok sekarang — jadi walau stok sudah
+        // terisi (mis. produksi baru selesai sore), submit ulang di posting_time lama
+        // akan tetap gagal dengan error yang sama. Geser ke waktu retry ini supaya
+        // stok terbaru ikut terhitung.
+        if ($refreshPostingTime) {
+            try {
+                $now = $this->localNow();
+                $this->client->put('/api/resource/Delivery%20Note/'.rawurlencode($docname), [
+                    'json' => [
+                        'set_posting_time' => 1,
+                        'posting_date' => $now->format('Y-m-d'),
+                        'posting_time' => $now->format('H:i:s'),
+                    ],
+                ]);
+            } catch (RequestException $e) {
+                Log::warning('Gagal refresh posting_time DN sebelum retry submit', [
+                    'shipment' => $shipment->id, 'dn' => $docname, 'error' => $this->extractError($e),
+                ]);
+            }
         }
 
         try {
@@ -3731,6 +3712,85 @@ class ErpNextService
         Log::info('MR submitted (docstatus=1)', ['docname' => $docname, 'request' => $stockRequest->request_no]);
 
         return ['success' => true, 'docname' => $docname];
+    }
+
+    // =========================================================
+    // ITEM YANG PUNYA BOM AKTIF ← ERP HPY
+    // Dipakai saat Delivery Order membuat Permintaan FG otomatis: hanya barang
+    // yang memang diproduksi (punya BOM aktif) yang masuk permintaan; kemasan
+    // dan barang beli tidak. Kriterianya sama dengan Server Script
+    // "Auto Produksi Material Request" (BOM is_active = 1).
+    // Mengembalikan null bila ERP tidak bisa ditanya — pemanggil lalu
+    // memasukkan semua item (ERP sendiri melewati item tanpa BOM).
+    // =========================================================
+    public function itemsWithActiveBom(array $itemCodes): ?array
+    {
+        $itemCodes = array_values(array_unique(array_filter($itemCodes)));
+        if (empty($this->baseUrl) || empty($itemCodes)) {
+            return null;
+        }
+
+        try {
+            $response = $this->client->get('/api/resource/BOM', [
+                'query' => [
+                    'fields' => '["item"]',
+                    'filters' => json_encode([['item', 'in', $itemCodes], ['is_active', '=', 1]]),
+                    'limit_page_length' => 500,
+                ],
+            ]);
+            $data = json_decode($response->getBody(), true);
+
+            return collect($data['data'] ?? [])->pluck('item')->filter()->unique()->values()->toArray();
+        } catch (\Throwable $e) {
+            Log::warning('itemsWithActiveBom: ERP tidak bisa ditanya', ['error' => $e->getMessage()]);
+
+            return null;
+        }
+    }
+
+    // =========================================================
+    // HAPUS MATERIAL REQUEST DRAFT ← saat Permintaan FG dibatalkan
+    // Hanya menghapus bila MR masih Draft (docstatus 0), supaya tidak ada MR
+    // yatim yang bisa disahkan orang lain dan diam-diam membentuk stok.
+    // MR yang sudah disahkan tidak disentuh dan pembatalan ditolak.
+    // =========================================================
+    public function deleteDraftMaterialRequest(StockRequest $stockRequest): array
+    {
+        $docname = $stockRequest->erp_material_request;
+        if (empty($this->baseUrl) || ! $docname) {
+            return ['success' => true, 'deleted' => false];
+        }
+
+        $status = $this->fetchDocStatus('Material Request', $docname);
+        if ($status === 1) {
+            return ['success' => false, 'submitted' => true, 'error' => 'Material Request '.$docname.' sudah disahkan di ERP HPY.'];
+        }
+
+        $deleted = false;
+        if ($status === 0) {
+            try {
+                $this->client->delete('/api/resource/Material%20Request/'.rawurlencode($docname));
+                $deleted = true;
+            } catch (ConnectException $e) {
+                return ['success' => false, 'error' => 'Network unreachable', 'network_error' => true];
+            } catch (RequestException $e) {
+                $rawBody = $e->hasResponse() ? $this->readResponseBody($e->getResponse()) : '';
+                Log::error('MR draft delete failed', ['docname' => $docname, 'raw' => $rawBody]);
+
+                return ['success' => false, 'error' => $this->extractError($e)];
+            }
+        }
+
+        // Draft terhapus, sudah dibatalkan (2), atau memang sudah tidak ada di ERP:
+        // lepas tautannya supaya permintaan ini tidak menunjuk dokumen mati.
+        if ($deleted || $status === 2 || ! $this->erpDocExists('Material Request', $docname)) {
+            $stockRequest->update(['erp_material_request' => null, 'erp_sync_status' => 'pending', 'erp_sync_error' => null]);
+            Log::info('MR draft dilepas dari Permintaan FG', ['docname' => $docname, 'request' => $stockRequest->request_no, 'deleted' => $deleted]);
+
+            return ['success' => true, 'deleted' => $deleted];
+        }
+
+        return ['success' => false, 'error' => 'Status Material Request '.$docname.' di ERP HPY tidak terbaca.'];
     }
 
     // =========================================================

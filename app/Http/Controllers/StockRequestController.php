@@ -13,7 +13,7 @@ class StockRequestController extends Controller
 {
     public function index(Request $request)
     {
-        $query = StockRequest::with('requester')
+        $query = StockRequest::with('requester', 'deliveryOrder')
             ->orderByDesc('id');
 
         if ($request->status) {
@@ -88,7 +88,7 @@ class StockRequestController extends Controller
 
     public function show(StockRequest $stockRequest)
     {
-        $stockRequest->load('requester', 'items.product');
+        $stockRequest->load('requester', 'items.product', 'deliveryOrder.customer');
         return view('stock-requests.show', ['req' => $stockRequest]);
     }
 
@@ -126,8 +126,34 @@ class StockRequestController extends Controller
         if ($stockRequest->status === 'cancelled') {
             return back()->with('error', 'Sudah dibatalkan.');
         }
+        // Sudah "Selesai" berarti Material Request-nya sudah disahkan dan stoknya
+        // sudah/akan terbentuk di ERP HPY — membatalkan di sini tidak menariknya lagi.
+        if ($stockRequest->kitchen_status === 'done') {
+            return back()->with('error', 'Permintaan sudah selesai diproduksi, tidak bisa dibatalkan.');
+        }
+
+        // Material Request yang masih Draft ikut dihapus supaya tidak tertinggal
+        // di ERP HPY lalu disahkan orang lain tanpa sengaja.
+        $note = '';
+        if ($stockRequest->erp_material_request) {
+            try {
+                $erp = new ErpNextService();
+                if ($erp->isConfigured()) {
+                    $result = $erp->deleteDraftMaterialRequest($stockRequest);
+                    if (! $result['success'] && ! empty($result['submitted'])) {
+                        return back()->with('error', 'Tidak dibatalkan: ' . ($result['error'] ?? '') . ' Produksinya sudah berjalan.');
+                    }
+                    if (! $result['success']) {
+                        $note = ' (Material Request ' . $stockRequest->erp_material_request . ' belum terhapus di ERP HPY: ' . ($result['error'] ?? '') . ')';
+                    }
+                }
+            } catch (\Exception $e) {
+                $note = ' (Material Request ' . $stockRequest->erp_material_request . ' belum terhapus di ERP HPY.)';
+            }
+        }
+
         $stockRequest->update(['status' => 'cancelled', 'kitchen_status' => null]);
-        return back()->with('success', 'Permintaan FG dibatalkan.');
+        return back()->with('success', 'Permintaan FG dibatalkan.' . $note);
     }
 
     public function syncErp(StockRequest $stockRequest)
@@ -138,6 +164,18 @@ class StockRequestController extends Controller
         $stockRequest->load('items.product');
         $erp    = new ErpNextService();
         $result = $erp->createMaterialRequest($stockRequest);
+
+        // Kalau dapur sudah menekan "Selesai" sebelum Material Request sempat
+        // terbuat, sahkan sekarang — kalau tidak MR tertinggal Draft dan stoknya
+        // tidak pernah terbentuk.
+        if (($result['success'] ?? false) && $stockRequest->kitchen_status === 'done') {
+            $stockRequest->refresh();
+            $submit = $erp->submitMaterialRequest($stockRequest);
+            if (! ($submit['success'] ?? false)) {
+                $result = ['success' => false, 'error' => 'Material Request ' . ($result['docname'] ?? '') . ' dibuat tapi gagal disahkan: ' . ($submit['error'] ?? '')];
+            }
+        }
+
         return response()->json($result);
     }
 
@@ -158,12 +196,21 @@ class StockRequestController extends Controller
 
         $stockRequest->update($data);
 
-        // Saat selesai: submit Material Request di ERP (docstatus=1)
-        if ($newStatus === 'done' && $stockRequest->erp_material_request) {
+        // Saat selesai: submit Material Request di ERP (docstatus=1).
+        // Bila MR belum sempat terbuat (mis. ERP tak terjangkau saat diajukan),
+        // buat dulu — kalau tidak "Selesai" tidak membentuk stok apa pun.
+        if ($newStatus === 'done') {
             try {
                 $erp = new ErpNextService();
                 if ($erp->isConfigured()) {
-                    $erp->submitMaterialRequest($stockRequest);
+                    if (! $stockRequest->erp_material_request) {
+                        $stockRequest->load('items.product');
+                        $erp->createMaterialRequest($stockRequest);
+                        $stockRequest->refresh();
+                    }
+                    if ($stockRequest->erp_material_request) {
+                        $erp->submitMaterialRequest($stockRequest);
+                    }
                 }
             } catch (\Exception $e) {
                 // silent — jangan block perubahan status kitchen

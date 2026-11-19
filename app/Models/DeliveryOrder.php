@@ -57,6 +57,14 @@ class DeliveryOrder extends Model
         return $this->hasMany(DeliveryOrderPayment::class)->orderBy('payment_date');
     }
 
+    /** Permintaan FG otomatis milik order ini (yang dibatalkan tidak dihitung). */
+    public function productionRequest()
+    {
+        return $this->hasOne(StockRequest::class)
+            ->where('status', '!=', 'cancelled')
+            ->orderByDesc('id');
+    }
+
     public function totalPaid(): float
     {
         return (float) $this->payments()->sum('amount');

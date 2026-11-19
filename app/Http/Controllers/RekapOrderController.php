@@ -44,6 +44,9 @@ class RekapOrderController extends Controller
             $query = StockRequestItem::query()
                 ->join('stock_requests', 'stock_request_items.stock_request_id', '=', 'stock_requests.id')
                 ->where('stock_requests.status', 'submitted')
+                // Permintaan otomatis dari DO tidak dihitung di sini — qty-nya
+                // sudah terhitung di kolom Delivery Order, kalau ikut jadi dobel.
+                ->whereNull('stock_requests.delivery_order_id')
                 ->select(
                     'stock_request_items.item_name',
                     'stock_request_items.item_code',

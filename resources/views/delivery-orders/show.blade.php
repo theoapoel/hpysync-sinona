@@ -495,6 +495,21 @@
                     <i class="fas fa-exclamation-triangle"></i> {{ $order->erp_sync_error }}
                 </div>
                 @endif
+                {{-- Produksi: Permintaan FG otomatis dari order ini --}}
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+                    <span class="text-xs text-muted">Permintaan FG</span>
+                    @if($order->productionRequest)
+                        @php $fg = $order->productionRequest; @endphp
+                        <a href="{{ route('stock-requests.show', $fg) }}" class="badge {{ $fg->kitchen_status === 'done' ? 'badge-green' : 'badge-yellow' }}" style="text-decoration:none">
+                            {{ $fg->request_no }} &middot; {{ $fg->kitchen_status_label }}
+                        </a>
+                    @elseif($order->erp_material_request)
+                        {{-- Order lama: produksi dipicu langsung lewat Material Request. --}}
+                        <span class="badge badge-green">{{ $order->erp_material_request }}</span>
+                    @else
+                        <span class="badge badge-gray">{{ $order->status === 'draft' ? 'DIBUAT SAAT KONFIRMASI' : 'TIDAK ADA' }}</span>
+                    @endif
+                </div>
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
                     <span class="text-xs text-muted">Delivery Notes</span>
                     @php
